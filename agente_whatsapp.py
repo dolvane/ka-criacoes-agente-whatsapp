@@ -1,19 +1,19 @@
 """
 KA Criações — Agente de Atendimento WhatsApp com Claude IA
-Recebe mensagens do WhatsApp e responde automaticamente usando Claude.
 """
-import os, json, requests
+import os
+import json
+import requests
 from flask import Flask, request, jsonify
-from anthropic import Anthropic
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+load_dotenv()
 
 app = Flask(__name__)
-claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
-WHATSAPP_TOKEN    = os.getenv('WHATSAPP_TOKEN')
-PHONE_NUMBER_ID   = os.getenv('WHATSAPP_PHONE_NUMBER_ID')
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
+WHATSAPP_TOKEN    = os.getenv('WHATSAPP_TOKEN', '')
+PHONE_NUMBER_ID   = os.getenv('WHATSAPP_PHONE_NUMBER_ID', '')
 VERIFY_TOKEN      = os.getenv('WEBHOOK_VERIFY_TOKEN', 'kacriacoes2026')
 
 # Memória de conversas por cliente
@@ -32,23 +32,51 @@ SOBRE A KA CRIAÇÕES:
 PROCESSO DE PEDIDO:
 1. Cliente escolhe o produto
 2. Informa nome/personalização desejada
-3. Confirma o pedido e paga 50% de sinal (PIX)
+3. Confirma o pedido e paga 50% de sinal via PIX
 4. Produção em 5 a 7 dias úteis
 5. Aprovação da arte antes de produzir
 6. Entrega em Uberlândia ou Correios para todo o Brasil
 
-COMO VOCÊ DEVE SE COMPORTAR:
+COMO SE COMPORTAR:
 - Seja simpática, acolhedora e use linguagem próxima e carinhosa
 - Use emojis com moderação
 - Sempre pergunte o nome do cliente ao início
-- Quando o cliente quiser comprar, peça: nome para personalização, número/texto desejado, cor preferida
-- Informe que o prazo é de 5 a 7 dias úteis
 - Para fechar pedido, peça o endereço completo para calcular frete
 - Nunca invente preços — diga que vai verificar e confirmar
-- Se não souber responder, diga que vai chamar a Katia
+- Se não souber responder, diga que vai chamar a Katia"""
 
-SAUDAÇÃO INICIAL:
-Quando alguém escrever pela primeira vez, se apresente como assistente da KA Criações e pergunte o nome."""
+
+def responder_com_claude(telefone: str, mensagem: str) -> str:
+    """Gera resposta usando a API do Claude diretamente."""
+    if telefone not in conversas:
+        conversas[telefone] = []
+
+    conversas[telefone].append({"role": "user", "content": mensagem})
+
+    historico = conversas[telefone][-20:]
+
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+    }
+    body = {
+        "model": "claude-haiku-4-5",
+        "max_tokens": 500,
+        "system": SISTEMA,
+        "messages": historico
+    }
+
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers=headers,
+        json=body,
+        timeout=30
+    )
+
+    texto = resp.json()["content"][0]["text"]
+    conversas[telefone].append({"role": "assistant", "content": texto})
+    return texto
 
 
 def enviar_whatsapp(telefone: str, mensagem: str):
@@ -64,89 +92,41 @@ def enviar_whatsapp(telefone: str, mensagem: str):
         "type": "text",
         "text": {"body": mensagem}
     }
-    resp = requests.post(url, headers=headers, json=body, timeout=15)
-    return resp.json()
+    requests.post(url, headers=headers, json=body, timeout=15)
 
 
-def responder_com_claude(telefone: str, mensagem_cliente: str) -> str:
-    """Gera resposta usando Claude com histórico da conversa."""
-    if telefone not in conversas:
-        conversas[telefone] = []
-
-    conversas[telefone].append({
-        "role": "user",
-        "content": mensagem_cliente
-    })
-
-    # Mantém apenas as últimas 20 mensagens para economizar tokens
-    historico = conversas[telefone][-20:]
-
-    resposta = claude.messages.create(
-        model="claude-haiku-4-5",
-        max_tokens=500,
-        system=SISTEMA,
-        messages=historico
-    )
-
-    texto = resposta.content[0].text
-
-    conversas[telefone].append({
-        "role": "assistant",
-        "content": texto
-    })
-
-    return texto
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({'status': 'online', 'servico': 'KA Criações — Agente WhatsApp'})
 
 
 @app.route('/webhook', methods=['GET'])
 def verificar_webhook():
-    """Verificação do webhook pela Meta."""
     mode      = request.args.get('hub.mode')
     token     = request.args.get('hub.verify_token')
     challenge = request.args.get('hub.challenge')
-
     if mode == 'subscribe' and token == VERIFY_TOKEN:
-        print(f'✅ Webhook verificado!')
+        print('Webhook verificado!')
         return challenge, 200
     return 'Token inválido', 403
 
 
 @app.route('/webhook', methods=['POST'])
 def receber_mensagem():
-    """Recebe mensagens do WhatsApp e responde com Claude."""
     data = request.json
-
     try:
-        entry    = data['entry'][0]
-        changes  = entry['changes'][0]
-        value    = changes['value']
-
-        if 'messages' not in value:
-            return jsonify({'status': 'sem mensagem'}), 200
-
-        msg      = value['messages'][0]
+        msg      = data['entry'][0]['changes'][0]['value']['messages'][0]
         telefone = msg['from']
         tipo     = msg.get('type', '')
 
         if tipo == 'text':
-            texto = msg['text']['body']
-            print(f'📨 [{telefone}]: {texto}')
-
+            texto    = msg['text']['body']
             resposta = responder_com_claude(telefone, texto)
             enviar_whatsapp(telefone, resposta)
-
-            print(f'🤖 Resposta: {resposta}')
-
         elif tipo == 'audio':
-            enviar_whatsapp(telefone,
-                'Oi! Por enquanto só consigo ler mensagens de texto. '
-                'Pode escrever o que precisa? 😊')
-
+            enviar_whatsapp(telefone, 'Por enquanto só consigo ler mensagens de texto. Pode escrever o que precisa? 😊')
         elif tipo == 'image':
-            enviar_whatsapp(telefone,
-                'Recebi sua imagem! Para pedir um produto personalizado, '
-                'pode me descrever o que deseja por texto? 😊')
-
+            enviar_whatsapp(telefone, 'Recebi sua imagem! Para pedir um produto, pode me descrever por texto? 😊')
     except (KeyError, IndexError):
         pass
 
@@ -155,18 +135,9 @@ def receber_mensagem():
 
 @app.route('/status', methods=['GET'])
 def status():
-    """Verifica se o agente está rodando."""
-    return jsonify({
-        'status': 'online',
-        'empresa': 'KA Criações',
-        'conversas_ativas': len(conversas)
-    })
+    return jsonify({'status': 'online', 'conversas_ativas': len(conversas)})
 
 
 if __name__ == '__main__':
-    print()
-    print('🤖 KA Criações — Agente WhatsApp iniciado!')
-    print('📍 Webhook: http://localhost:5000/webhook')
-    print('📊 Status:  http://localhost:5000/status')
-    print()
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
